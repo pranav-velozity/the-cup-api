@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: the-cup-api
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: the-cup-db
+          property: connectionString
+      - key: DATABASE_SSL
+        value: "true"
+      - key: CLERK_PUBLISHABLE_KEY
+        sync: false
+      - key: CLERK_SECRET_KEY
+        sync: false
+      - key: CORS_ORIGIN
+        sync: false
+      - key: DEFAULT_COUNTRY
+        value: US
+
+databases:
+  - name: the-cup-db
+    plan: free
