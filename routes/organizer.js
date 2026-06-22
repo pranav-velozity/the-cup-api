@@ -66,9 +66,9 @@ router.post("/redeem", async (req, res, next) => {
       const { rows: tRows } = await c.query(
         `INSERT INTO tournaments
            (code, name, organizer_clerk_id, gate_pass_id,
-            team_a_name, team_a_color, team_a_emoji, team_a_kind,
-            team_b_name, team_b_color, team_b_emoji, team_b_kind)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+            team_a_name, team_a_color, team_a_emoji, team_a_kind, team_a_logo_url,
+            team_b_name, team_b_color, team_b_emoji, team_b_kind, team_b_logo_url)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
          RETURNING *`,
         [
           tcode,
@@ -79,10 +79,12 @@ router.post("/redeem", async (req, res, next) => {
           teamA?.color || "#2E7D5B",
           teamA?.emoji || null,
           teamA?.kind || "crest",
+          teamA?.logoUrl || null,
           teamB?.name || "Team B",
           teamB?.color || "#B68A2E",
           teamB?.emoji || null,
           teamB?.kind || "crest",
+          teamB?.logoUrl || null,
         ]
       );
       const t = tRows[0];
