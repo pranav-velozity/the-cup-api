@@ -5,7 +5,7 @@ import {
   primaryPhone,
 } from "../middleware/auth.js";
 import { query } from "../db/pool.js";
-import { toE164 } from "../lib/phone.js";
+import { toE164, cleanLoose, phoneKey } from "../lib/phone.js";
 
 const router = Router();
 router.use(requireAuth, attachClerkUser);
@@ -18,8 +18,10 @@ router.post("/join", async (req, res, next) => {
     if (!code)
       return res.status(400).json({ error: "Tournament code required" });
 
-    const phone = toE164(primaryPhone(req.clerkUser));
-    if (!phone)
+    const rawPhone = primaryPhone(req.clerkUser);
+    const phone = toE164(rawPhone) || cleanLoose(rawPhone);
+    const key = phoneKey(rawPhone);
+    if (!phone || !key)
       return res
         .status(400)
         .json({ error: "Your account has no verified phone number" });
@@ -32,16 +34,17 @@ router.post("/join", async (req, res, next) => {
     if (!t)
       return res.status(404).json({ error: "No tournament with that code" });
 
-    const { rows: entries } = await query(
-      `SELECT * FROM roster_entries WHERE tournament_id=$1 AND phone=$2`,
-      [t.id, phone]
+    // Forgiving match on the last 9 digits (handles +61/0/+1/format differences).
+    const { rows: roster } = await query(
+      `SELECT * FROM roster_entries WHERE tournament_id=$1`,
+      [t.id]
     );
-    if (!entries.length)
+    const entry = roster.find((e) => phoneKey(e.phone) === key);
+    if (!entry)
       return res.status(403).json({
         error:
           "Your number isn't on the roster — ask your organizer to add you",
       });
-    const entry = entries[0];
 
     const { rows } = await query(
       `INSERT INTO registrations

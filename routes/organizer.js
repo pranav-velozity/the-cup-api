@@ -215,7 +215,7 @@ router.post("/tournaments/:id/roster", async (req, res, next) => {
     const out = [];
     const skipped = [];
     for (const e of entries) {
-      const phone = toE164(e.phone);
+      const phone = toE164(e.phone) || cleanLoose(e.phone);
       if (!phone || !["A", "B"].includes(e.team)) {
         skipped.push(e);
         continue;
@@ -291,6 +291,21 @@ router.post("/request-access", async (req, res, next) => {
       [code, req.userId, name]
     );
     res.status(201).json({ code });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// Delete a tournament the organizer owns (and everything under it).
+router.delete("/tournaments/:id", async (req, res, next) => {
+  try {
+    await ownedTournament(req.params.id, req.userId); // throws if not owner
+    await withTransaction(async (c) => {
+      // Release the gate pass FK (no cascade), then cascade-delete the rest.
+      await c.query(`UPDATE gate_passes SET tournament_id=NULL WHERE tournament_id=$1`, [req.params.id]);
+      await c.query(`DELETE FROM tournaments WHERE id=$1`, [req.params.id]);
+    });
+    res.json({ deleted: true });
   } catch (e) {
     next(e);
   }
