@@ -278,4 +278,22 @@ router.patch("/tournaments/:id/matches/:matchId", async (req, res, next) => {
   }
 });
 
+// Self-serve: a signed-in user without a gate pass requests one.
+// Mints an unused pass tagged with their name so an admin sees who asked.
+router.post("/request-access", async (req, res, next) => {
+  const name = (req.body?.name || "").trim();
+  if (!name) return res.status(400).json({ error: "Please enter your name." });
+  try {
+    const code = await uniqueCode("gate_passes");
+    await query(
+      `INSERT INTO gate_passes (code, status, created_by_clerk_id, requested_by)
+       VALUES ($1,'unused',$2,$3)`,
+      [code, req.userId, name]
+    );
+    res.status(201).json({ code });
+  } catch (e) {
+    next(e);
+  }
+});
+
 export default router;
