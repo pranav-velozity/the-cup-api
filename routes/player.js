@@ -42,8 +42,9 @@ router.post("/join", async (req, res, next) => {
     const entry = roster.find((e) => phoneKey(e.phone) === key);
     if (!entry)
       return res.status(403).json({
-        error:
-          "Your number isn't on the roster — ask your organizer to add you",
+        error: `Your number ${phone} isn't on the roster — ask your organizer to add it`,
+        yourPhone: phone,
+        yourKey: key,
       });
 
     const { rows } = await query(
@@ -115,6 +116,48 @@ router.patch("/registrations/:id", async (req, res, next) => {
     if (!rows.length)
       return res.status(404).json({ error: "Registration not found" });
     res.json(rows[0]);
+  } catch (e) {
+    next(e);
+  }
+});
+
+// Diagnose a join: shows the phone we detected for you and the roster keys,
+// so a mismatch is obvious. (Numbers are only visible to the signed-in user.)
+router.get("/diagnose", async (req, res, next) => {
+  try {
+    const code = String(req.query.code || "").trim();
+    const rawPhone = primaryPhone(req.clerkUser);
+    const key = phoneKey(rawPhone);
+    const out = { yourPhone: rawPhone, yourKey: key, tournamentFound: false };
+    const { rows: tRows } = await query(`SELECT id, code, name FROM tournaments WHERE code=$1`, [code]);
+    const t = tRows[0];
+    if (t) {
+      out.tournamentFound = true;
+      out.tournamentName = t.name;
+      const { rows: roster } = await query(
+        `SELECT planned_name, phone FROM roster_entries WHERE tournament_id=$1`, [t.id]
+      );
+      out.rosterCount = roster.length;
+      out.roster = roster.map((r) => ({ name: r.planned_name, phone: r.phone, key: phoneKey(r.phone) }));
+      out.matched = roster.some((r) => phoneKey(r.phone) === key);
+    }
+    res.json(out);
+  } catch (e) {
+    next(e);
+  }
+});
+
+// Tournaments this user has joined as a player (for the Home "Playing in" list).
+router.get("/tournaments", async (req, res, next) => {
+  try {
+    const { rows } = await query(
+      `SELECT t.* FROM tournaments t
+       JOIN registrations r ON r.tournament_id = t.id
+       WHERE r.player_clerk_id = $1
+       ORDER BY t.created_at DESC`,
+      [req.userId]
+    );
+    res.json(rows);
   } catch (e) {
     next(e);
   }

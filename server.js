@@ -35,7 +35,7 @@ app.use(morgan("tiny"));
 app.use(clerkMiddleware());
 
 app.get("/health", (req, res) =>
-  res.json({ ok: true, service: "the-cup-api", time: new Date().toISOString() })
+  res.json({ ok: true, service: "the-cup-api", version: "v2.4-phonematch", time: new Date().toISOString() })
 );
 
 app.use("/api/admin", adminRoutes);
