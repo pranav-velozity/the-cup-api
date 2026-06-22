@@ -31,7 +31,7 @@ router.post("/gate-passes", async (req, res, next) => {
 router.get("/gate-passes", async (req, res, next) => {
   try {
     const { rows } = await query(
-      `SELECT g.id, g.code, g.status, g.note, g.created_at, g.claimed_at,
+      `SELECT g.id, g.code, g.status, g.note, g.requested_by, g.created_at, g.claimed_at,
               g.tournament_id, t.name AS tournament_name
        FROM gate_passes g
        LEFT JOIN tournaments t ON t.id = g.tournament_id
