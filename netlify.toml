@@ -1,0 +1,9 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+# SPA fallback so client-side navigation + Clerk hash routing work
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

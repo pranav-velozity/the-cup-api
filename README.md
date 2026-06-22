@@ -1,126 +1,75 @@
-# The Cup — API
+# The Cup — Web (frontend)
 
-Backend for the team match-play golf scorer. Express + PostgreSQL (Render) +
-Clerk auth. This is the **foundation**: the two-code gate flow (admin mints a
-pass → organizer redeems it → player joins against the roster). Scoring, live
-board (sockets), and push notifications layer on top of this later.
+The link version of the app. React + Vite PWA, Clerk phone-OTP sign-in, talking
+to the Render API. This first build covers the **gate flow only**: sign in →
+(admin) mint a pass → (organizer) redeem a pass and create a tournament →
+(player) join against the roster. Scoring + live board + push come next.
 
-## What's here
+## Stack
 
-```
-server.js            App entry — middleware, routes, error handling
-schema.sql           The database (run once via npm run migrate)
-db/pool.js           Postgres pool + query/transaction helpers
-db/migrate.js        Applies schema.sql
-lib/codes.js         Unique 5-digit code generator
-lib/phone.js         E.164 phone normalization (roster matching)
-middleware/auth.js   Clerk requireAuth / requireAdmin + phone/email helpers
-routes/admin.js      Mint / list / revoke gate passes  (admin only)
-routes/organizer.js  Redeem pass, manage tournament / roster / matches
-routes/player.js     Join via roster check, view + update registration
-routes/public.js     Tournament summary for the join screen
-render.yaml          One-click Render blueprint (web service + Postgres)
-```
+- React + Vite, deployed to **Netlify**
+- **Clerk** for auth (phone OTP — same as the backend)
+- Calls the Render API (`the-cup-api`) with the Clerk session token
 
-## Identity model
+## Environment variables
 
-All three personas authenticate through **Clerk**:
+Copy `.env.example` to `.env` (local) and set the same two in Netlify:
 
-- **Admin (you):** email sign-in. Mark yourself admin by setting
-  `publicMetadata = { "role": "admin" }` on your user in the Clerk dashboard.
-- **Organizer:** email sign-in. Becomes the owner of any tournament they create.
-- **Player:** phone sign-in with **SMS OTP**, so their number is verified. The
-  roster is then an *authorization* check — is this verified number invited, and
-  on which team?
+| Var | Value |
+| --- | --- |
+| `VITE_API_URL` | Your Render API URL, e.g. `https://the-cup-api.onrender.com` (no trailing slash) |
+| `VITE_CLERK_PUBLISHABLE_KEY` | The `pk_...` key from Clerk |
 
-The API never stores passwords or OTPs — only Clerk user ids.
+## Run locally
 
-## Local setup
-
-1. **Install**
-   ```bash
-   npm install
-   ```
-2. **Configure** — copy `.env.example` to `.env` and fill in your Render
-   `DATABASE_URL` and Clerk keys.
-3. **Create the tables**
-   ```bash
-   npm run migrate
-   ```
-4. **Run**
-   ```bash
-   npm run dev      # auto-reload
-   # or
-   npm start
-   ```
-   Health check: `GET http://localhost:3001/health`
-
-## Deploy to Render
-
-**Option A — Blueprint (easiest).** Push this repo to GitHub, then in Render
-choose *New → Blueprint* and point it at the repo. `render.yaml` provisions the
-web service *and* a free Postgres instance and wires `DATABASE_URL`
-automatically. After the first deploy, add your `CLERK_*` keys and `CORS_ORIGIN`
-in the service's Environment tab, then run the migration once from the Render
-shell:
 ```bash
-npm run migrate
+npm install
+npm run dev
 ```
+Open the printed localhost URL. (Your local origin needs to be allowed by the
+API's `CORS_ORIGIN` — during building it's set to `*`, so this just works.)
 
-**Option B — Manual.** Create a Render Postgres instance, create a Web Service
-from the repo (`npm install` / `npm start`), set all env vars from
-`.env.example`, deploy, then `npm run migrate` from the shell.
+## Deploy to Netlify
 
-## Frontend wiring (next build)
+1. Push this folder to a GitHub repo named `the-cup-web`.
+2. In Netlify: **Add new site → Import from Git**, pick the repo.
+3. Build settings are auto-detected from `netlify.toml` (build `npm run build`,
+   publish `dist`).
+4. Add the two environment variables above under **Site settings → Environment**.
+5. Deploy. You'll get a URL like `the-cup.netlify.app`.
+6. **Back in Render**, change `CORS_ORIGIN` from `*` to that exact Netlify URL so
+   only your site can call the API.
 
-The Netlify PWA will attach the Clerk session token to each request:
+## Making yourself admin
 
-```js
-const token = await window.Clerk.session.getToken();
-fetch(`${API_URL}/api/organizer/tournaments`, {
-  headers: { Authorization: `Bearer ${token}` },
-});
-```
+The admin card only appears for users whose Clerk `publicMetadata` is
+`{ "role": "admin" }`.
 
-Set `CORS_ORIGIN` to include the Netlify URL so the browser is allowed to call
-the API.
-
-## Endpoints
-
-### Admin (requires `role: admin`)
-| Method | Path | Purpose |
-| --- | --- | --- |
-| POST | `/api/admin/gate-passes` | Mint a pass. Body: `{ note? }` |
-| GET | `/api/admin/gate-passes` | List all passes + status |
-| POST | `/api/admin/gate-passes/:id/revoke` | Revoke an unused pass |
-
-### Organizer (any signed-in user)
-| Method | Path | Purpose |
-| --- | --- | --- |
-| POST | `/api/organizer/redeem` | Redeem a pass → new tournament. Body: `{ code, name, teamA, teamB, singlesCount?, scrambleCount? }` |
-| GET | `/api/organizer/tournaments` | My tournaments |
-| GET | `/api/organizer/tournaments/:id` | Full detail (roster, matches, registrations) |
-| PATCH | `/api/organizer/tournaments/:id` | Update teams / notify settings / status |
-| POST | `/api/organizer/tournaments/:id/roster` | Add roster entries. Body: `{ entries: [{ team, planned_name?, phone }] }` |
-| DELETE | `/api/organizer/tournaments/:id/roster/:entryId` | Remove a roster entry |
-| PATCH | `/api/organizer/tournaments/:id/matches/:matchId` | Set match label / `sideA` / `sideB` |
-
-### Player (signed-in via phone OTP)
-| Method | Path | Purpose |
-| --- | --- | --- |
-| GET | `/api/tournaments/:code/summary` | Basic info to render the join screen |
-| POST | `/api/player/join` | Join. Body: `{ code, name? }` — phone must be on the roster |
-| GET | `/api/player/me?code=XXXXX` | My registration |
-| PATCH | `/api/player/registrations/:id` | Update `{ name?, notifyEnabled? }` |
-
-## Quick smoke test (after deploy)
-
-1. In Clerk, set your user's `publicMetadata.role` to `"admin"`.
-2. Mint a pass (with your Clerk token):
-   ```bash
-   curl -X POST $API/api/admin/gate-passes \
-     -H "Authorization: Bearer $CLERK_TOKEN" \
-     -H "Content-Type: application/json" -d '{"note":"first pass"}'
+1. Sign in once (so your Clerk user exists).
+2. In the Clerk dashboard → Users → your user → edit **Public metadata** to:
+   ```json
+   { "role": "admin" }
    ```
-3. Redeem it as an organizer to create a tournament, add a roster entry with
-   your own phone, then join as a player with that same number.
+3. Refresh the app — the "Admin — gate passes" card appears.
+
+## Testing the full gate flow
+
+1. **Admin:** mint a gate pass (note the 5-digit code).
+2. **Organizer:** Home → Create a tournament → enter that pass → set teams →
+   create. You'll get a tournament code. On the success screen, add a player
+   phone number to the roster (use a real number you can receive SMS on, or a
+   Clerk test number).
+3. **Player:** sign in with that phone number, Home → Join a tournament → enter
+   the tournament code → your name → Join. You should land on "You're in" with
+   your team.
+
+> Clerk test mode: any fictional phone number can be verified with code
+> **424242**, so you can exercise the player path without real SMS. Make sure the
+> roster number you add matches the test number you sign in with.
+
+## Notes
+
+- Sign-in uses Clerk's prebuilt component with `routing="hash"`, so no router is
+  needed and the Netlify SPA redirect in `netlify.toml` covers deep links.
+- First API call after the service has been idle can take ~30–50s on Render's
+  free web tier (cold start). Paid instances remove this.
