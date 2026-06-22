@@ -1,3 +1,4 @@
+import http from "node:http";
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -9,6 +10,8 @@ import adminRoutes from "./routes/admin.js";
 import organizerRoutes from "./routes/organizer.js";
 import playerRoutes from "./routes/player.js";
 import publicRoutes from "./routes/public.js";
+import scoreRoutes from "./routes/score.js";
+import { initRealtime } from "./lib/realtime.js";
 
 dotenv.config();
 
@@ -38,6 +41,7 @@ app.get("/health", (req, res) =>
 app.use("/api/admin", adminRoutes);
 app.use("/api/organizer", organizerRoutes);
 app.use("/api/player", playerRoutes);
+app.use("/api/score", scoreRoutes);
 app.use("/api", publicRoutes);
 
 app.use((req, res) => res.status(404).json({ error: "Not found" }));
@@ -49,4 +53,9 @@ app.use((err, req, res, next) => {
 });
 
 const port = process.env.PORT || 3001;
-app.listen(port, () => console.log(`the-cup-api listening on :${port}`));
+const server = http.createServer(app);
+
+// Attach Socket.IO for live board updates (one room per tournament code).
+initRealtime(server, process.env.CORS_ORIGIN);
+
+server.listen(port, () => console.log(`the-cup-api listening on :${port}`));
