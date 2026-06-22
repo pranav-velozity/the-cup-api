@@ -19,10 +19,28 @@ async function ownedTournament(id, userId) {
 
 // Redeem a gate pass -> create a tournament + blank matches in one transaction.
 router.post("/redeem", async (req, res, next) => {
-  const { code, name, teamA, teamB, singlesCount, scrambleCount } =
-    req.body || {};
+  const { code, name, teamA, teamB, days } = req.body || {};
   if (!code || !name)
     return res.status(400).json({ error: "code and name are required" });
+
+  // Normalize the day config (1..4 days). Fall back to the classic 2-day mix.
+  const DEFAULT_DAYS = [
+    { format: "singles", count: 18, pph: 1, playAll: true },
+    { format: "scramble", count: 9, pph: 2, playAll: true },
+  ];
+  const clampInt = (v, def, lo, hi) =>
+    Math.min(Math.max(parseInt(v ?? def, 10) || def, lo), hi);
+  const cfg = (Array.isArray(days) && days.length ? days : DEFAULT_DAYS)
+    .slice(0, 4)
+    .map((d) => {
+      const format = d.format === "scramble" ? "scramble" : "singles";
+      return {
+        format,
+        count: clampInt(d.count, format === "scramble" ? 9 : 18, 1, 30),
+        pph: clampInt(d.pph, format === "scramble" ? 2 : 1, 1, 10),
+        playAll: d.playAll !== false,
+      };
+    });
 
   try {
     const tournament = await withTransaction(async (c) => {
@@ -44,21 +62,13 @@ router.post("/redeem", async (req, res, next) => {
         });
 
       const tcode = await uniqueCode("tournaments");
-      const singles = Math.min(
-        Math.max(parseInt(singlesCount ?? 18, 10) || 18, 1),
-        30
-      );
-      const scramble = Math.min(
-        Math.max(parseInt(scrambleCount ?? 9, 10) || 9, 1),
-        30
-      );
 
       const { rows: tRows } = await c.query(
         `INSERT INTO tournaments
            (code, name, organizer_clerk_id, gate_pass_id,
-            team_a_name, team_a_color, team_b_name, team_b_color,
-            singles_count, scramble_count)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+            team_a_name, team_a_color, team_a_emoji, team_a_kind,
+            team_b_name, team_b_color, team_b_emoji, team_b_kind)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
          RETURNING *`,
         [
           tcode,
@@ -66,11 +76,13 @@ router.post("/redeem", async (req, res, next) => {
           req.userId,
           pass.id,
           teamA?.name || "Team A",
-          teamA?.color || "#3D7BFF",
+          teamA?.color || "#2E7D5B",
+          teamA?.emoji || null,
+          teamA?.kind || "crest",
           teamB?.name || "Team B",
-          teamB?.color || "#FF5C5C",
-          singles,
-          scramble,
+          teamB?.color || "#B68A2E",
+          teamB?.emoji || null,
+          teamB?.kind || "crest",
         ]
       );
       const t = tRows[0];
@@ -82,23 +94,28 @@ router.post("/redeem", async (req, res, next) => {
         [req.userId, t.id, pass.id]
       );
 
-      // Pre-create blank matches so scoring has rows to write into.
-      const values = [];
-      const params = [];
-      let i = 1;
-      for (let n = 1; n <= singles; n++) {
-        values.push(`($${i++},1,'singles',$${i++},$${i++})`);
-        params.push(t.id, `Match ${n}`, n);
+      // Create each day + its blank matches so scoring has rows to write into.
+      for (let di = 0; di < cfg.length; di++) {
+        const d = cfg[di];
+        await c.query(
+          `INSERT INTO tournament_days
+             (tournament_id, day_index, format, points_per_hole, play_all)
+           VALUES ($1,$2,$3,$4,$5)`,
+          [t.id, di, d.format, d.pph, d.playAll]
+        );
+        const values = [];
+        const params = [];
+        let i = 1;
+        for (let n = 1; n <= d.count; n++) {
+          values.push(`($${i++},$${i++},$${i++},$${i++},$${i++})`);
+          params.push(t.id, di, d.format, `Match ${n}`, n);
+        }
+        await c.query(
+          `INSERT INTO matches (tournament_id, day_index, kind, label, ordinal)
+           VALUES ${values.join(",")}`,
+          params
+        );
       }
-      for (let n = 1; n <= scramble; n++) {
-        values.push(`($${i++},2,'scramble',$${i++},$${i++})`);
-        params.push(t.id, `Match ${n}`, n);
-      }
-      await c.query(
-        `INSERT INTO matches (tournament_id, day, kind, label, ordinal)
-         VALUES ${values.join(",")}`,
-        params
-      );
 
       return t;
     });
@@ -126,14 +143,18 @@ router.get("/tournaments", async (req, res, next) => {
 router.get("/tournaments/:id", async (req, res, next) => {
   try {
     const t = await ownedTournament(req.params.id, req.userId);
-    const [{ rows: roster }, { rows: matches }, { rows: registrations }] =
+    const [{ rows: days }, { rows: roster }, { rows: matches }, { rows: registrations }] =
       await Promise.all([
+        query(
+          `SELECT * FROM tournament_days WHERE tournament_id=$1 ORDER BY day_index`,
+          [t.id]
+        ),
         query(
           `SELECT * FROM roster_entries WHERE tournament_id=$1 ORDER BY team, created_at`,
           [t.id]
         ),
         query(
-          `SELECT * FROM matches WHERE tournament_id=$1 ORDER BY day, ordinal`,
+          `SELECT * FROM matches WHERE tournament_id=$1 ORDER BY day_index, ordinal`,
           [t.id]
         ),
         query(
@@ -142,7 +163,7 @@ router.get("/tournaments/:id", async (req, res, next) => {
           [t.id]
         ),
       ]);
-    res.json({ ...t, roster, matches, registrations });
+    res.json({ ...t, days, roster, matches, registrations });
   } catch (e) {
     next(e);
   }
