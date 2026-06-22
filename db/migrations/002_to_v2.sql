@@ -66,3 +66,6 @@ ALTER TABLE tournaments DROP COLUMN IF EXISTS singles_count;
 ALTER TABLE tournaments DROP COLUMN IF EXISTS scramble_count;
 ALTER TABLE tournaments DROP COLUMN IF EXISTS day1_points_per_hole;
 ALTER TABLE tournaments DROP COLUMN IF EXISTS day2_points_per_hole;
+
+-- Now that day_index exists, add the day-aware match index.
+CREATE INDEX IF NOT EXISTS idx_matches_day ON matches (tournament_id, day_index, ordinal);

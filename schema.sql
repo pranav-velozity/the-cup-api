@@ -201,7 +201,7 @@ CREATE INDEX IF NOT EXISTS idx_gate_passes_code         ON gate_passes (code);
 CREATE INDEX IF NOT EXISTS idx_days_tournament          ON tournament_days (tournament_id, day_index);
 CREATE INDEX IF NOT EXISTS idx_roster_tournament        ON roster_entries (tournament_id);
 CREATE INDEX IF NOT EXISTS idx_registrations_tournament ON registrations (tournament_id);
-CREATE INDEX IF NOT EXISTS idx_matches_tournament       ON matches (tournament_id, day_index, ordinal);
+CREATE INDEX IF NOT EXISTS idx_matches_tournament       ON matches (tournament_id, ordinal);
 CREATE INDEX IF NOT EXISTS idx_hole_results_match       ON hole_results (match_id);
 CREATE INDEX IF NOT EXISTS idx_events_tournament        ON match_events (tournament_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_notifications_tournament ON notifications (tournament_id, created_at DESC);
