@@ -2,7 +2,7 @@ import { Router } from "express";
 import { requireAuth } from "../middleware/auth.js";
 import { query, withTransaction } from "../db/pool.js";
 import { uniqueCode } from "../lib/codes.js";
-import { toE164 } from "../lib/phone.js";
+import { toE164, cleanLoose } from "../lib/phone.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -215,20 +215,24 @@ router.post("/tournaments/:id/roster", async (req, res, next) => {
     const out = [];
     const skipped = [];
     for (const e of entries) {
-      const phone = toE164(e.phone) || cleanLoose(e.phone);
-      if (!phone || !["A", "B"].includes(e.team)) {
-        skipped.push(e);
-        continue;
+      try {
+        const phone = toE164(e.phone) || cleanLoose(e.phone);
+        if (!phone || !["A", "B"].includes(e.team)) {
+          skipped.push(e);
+          continue;
+        }
+        const { rows } = await query(
+          `INSERT INTO roster_entries (tournament_id, team, planned_name, phone)
+           VALUES ($1,$2,$3,$4)
+           ON CONFLICT (tournament_id, phone)
+             DO UPDATE SET team = EXCLUDED.team, planned_name = EXCLUDED.planned_name
+           RETURNING *`,
+          [req.params.id, e.team, e.planned_name || null, phone]
+        );
+        out.push(rows[0]);
+      } catch (err) {
+        skipped.push({ ...e, error: err.message });
       }
-      const { rows } = await query(
-        `INSERT INTO roster_entries (tournament_id, team, planned_name, phone)
-         VALUES ($1,$2,$3,$4)
-         ON CONFLICT (tournament_id, phone)
-           DO UPDATE SET team = EXCLUDED.team, planned_name = EXCLUDED.planned_name
-         RETURNING *`,
-        [req.params.id, e.team, e.planned_name || null, phone]
-      );
-      out.push(rows[0]);
     }
     res.status(201).json({ added: out, skipped });
   } catch (e) {
