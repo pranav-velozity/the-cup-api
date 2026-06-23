@@ -12,6 +12,7 @@ import playerRoutes from "./routes/player.js";
 import publicRoutes from "./routes/public.js";
 import scoreRoutes from "./routes/score.js";
 import { initRealtime } from "./lib/realtime.js";
+import { vapidPublicKey } from "./lib/push.js";
 
 dotenv.config();
 
@@ -35,7 +36,12 @@ app.use(morgan("tiny"));
 app.use(clerkMiddleware());
 
 app.get("/health", (req, res) =>
-  res.json({ ok: true, service: "the-cup-api", version: "v2.5-rosterfix", time: new Date().toISOString() })
+  res.json({ ok: true, service: "the-cup-api", version: "v2.6-push", time: new Date().toISOString() })
+);
+
+// Public client config (the VAPID public key the browser needs to subscribe).
+app.get("/api/config", (req, res) =>
+  res.json({ vapidPublicKey: vapidPublicKey() })
 );
 
 app.use("/api/admin", adminRoutes);

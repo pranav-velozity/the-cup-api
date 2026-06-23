@@ -163,4 +163,69 @@ router.get("/tournaments", async (req, res, next) => {
   }
 });
 
+// ---- push notifications --------------------------------------------------
+
+// Subscribe this device to push for every tournament the user plays in.
+// Body: { subscription: { endpoint, keys: { p256dh, auth } } }
+router.post("/push/subscribe", async (req, res, next) => {
+  try {
+    const sub = req.body?.subscription;
+    if (!sub?.endpoint || !sub?.keys?.p256dh || !sub?.keys?.auth)
+      return res.status(400).json({ error: "Invalid subscription" });
+
+    const { rows: regs } = await query(
+      `SELECT id FROM registrations WHERE player_clerk_id = $1`, [req.userId]
+    );
+    if (!regs.length) return res.json({ linked: 0 });
+
+    for (const r of regs) {
+      await query(
+        `INSERT INTO push_subscriptions (registration_id, endpoint, p256dh, auth)
+         VALUES ($1,$2,$3,$4)
+         ON CONFLICT (registration_id, endpoint)
+           DO UPDATE SET p256dh = EXCLUDED.p256dh, auth = EXCLUDED.auth`,
+        [r.id, sub.endpoint, sub.keys.p256dh, sub.keys.auth]
+      );
+    }
+    res.json({ linked: regs.length });
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.post("/push/unsubscribe", async (req, res, next) => {
+  try {
+    const endpoint = req.body?.endpoint;
+    if (!endpoint) return res.status(400).json({ error: "endpoint required" });
+    await query(
+      `DELETE FROM push_subscriptions ps USING registrations r
+        WHERE ps.registration_id = r.id AND r.player_clerk_id = $1 AND ps.endpoint = $2`,
+      [req.userId, endpoint]
+    );
+    res.json({ ok: true });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// In-app feed: notifications across the tournaments this user plays in.
+router.get("/notifications", async (req, res, next) => {
+  try {
+    const { rows } = await query(
+      `SELECT n.id, n.type, n.title, n.body, n.created_at, t.name AS tournament_name, t.code AS tournament_code
+         FROM notifications n
+         JOIN tournaments t ON t.id = n.tournament_id
+        WHERE n.tournament_id IN (
+              SELECT tournament_id FROM registrations WHERE player_clerk_id = $1)
+          AND n.audience = 'all'
+        ORDER BY n.created_at DESC
+        LIMIT 50`,
+      [req.userId]
+    );
+    res.json(rows);
+  } catch (e) {
+    next(e);
+  }
+});
+
 export default router;

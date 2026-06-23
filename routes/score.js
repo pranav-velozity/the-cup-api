@@ -15,6 +15,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { query, withTransaction } from "../db/pool.js";
 import { deriveBoard } from "../lib/scoring.js";
 import { emitBoard, emitEvent } from "../lib/realtime.js";
+import { notify, detectEvents } from "../lib/notify.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -166,6 +167,9 @@ router.put("/matches/:matchId/holes/:hole", async (req, res, next) => {
 
     const namesById = await loadNamesById(tournament.id);
 
+    // Snapshot before the write so we can detect newsworthy transitions.
+    const { board: beforeBoard } = await buildBoard(tournament);
+
     await withTransaction((c) =>
       applyHole(c, {
         match,
@@ -181,6 +185,12 @@ router.put("/matches/:matchId/holes/:hole", async (req, res, next) => {
     const { board, events } = await buildBoard(tournament);
     emitBoard(tournament.code, board);
     if (events[0]) emitEvent(tournament.code, events[0]);
+
+    // Fire notifications for match-final / lead-change / day-end transitions.
+    for (const e of detectEvents(beforeBoard, board)) {
+      notify(tournament, e).catch((err) => console.error("[notify]", err.message));
+    }
+
     res.json(board);
   } catch (e) {
     next(e);
@@ -201,6 +211,19 @@ router.put("/batch", async (req, res, next) => {
     const touched = {};
     const accepted = [];
     const rejected = [];
+
+    // Snapshot before-boards for any tournament these writes touch.
+    const beforeBoards = {};
+    {
+      const matchIds = [...new Set(writes.map((w) => w.matchId).filter(Boolean))];
+      if (matchIds.length) {
+        const { rows } = await query(
+          `SELECT DISTINCT t.* FROM tournaments t JOIN matches m ON m.tournament_id = t.id WHERE m.id = ANY($1)`,
+          [matchIds]
+        );
+        for (const t of rows) { const { board } = await buildBoard(t); beforeBoards[t.code] = board; }
+      }
+    }
 
     await withTransaction(async (c) => {
       for (const w of writes) {
@@ -248,6 +271,11 @@ router.put("/batch", async (req, res, next) => {
       const { board } = await buildBoard(touched[code]);
       boards[code] = board;
       emitBoard(code, board);
+      if (beforeBoards[code]) {
+        for (const e of detectEvents(beforeBoards[code], board)) {
+          notify(touched[code], e).catch((err) => console.error("[notify]", err.message));
+        }
+      }
     }
 
     res.json({ accepted, rejected, boards });
