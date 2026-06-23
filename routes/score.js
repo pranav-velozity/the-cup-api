@@ -161,6 +161,7 @@ router.get("/:code/board", async (req, res, next) => {
     if (!t) return res.status(404).json({ error: "No tournament with that code" });
     const { board } = await buildBoard(t);
     board.yourMatchIds = await findUserMatchIds(req.userId, t.id);
+    board.canScoreAll = t.organizer_clerk_id === req.userId;
     res.json(board);
   } catch (e) {
     next(e);
