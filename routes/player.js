@@ -213,18 +213,27 @@ router.post("/push/unsubscribe", async (req, res, next) => {
   }
 });
 
-// In-app feed: notifications across the tournaments this user plays in.
+// In-app feed: tournament updates for tournaments the user plays in, merged
+// with user-scoped notifications (pass approvals, admin requests, etc.).
 router.get("/notifications", async (req, res, next) => {
   try {
     const { rows } = await query(
-      `SELECT n.id, n.type, n.title, n.body, n.created_at, t.name AS tournament_name, t.code AS tournament_code
-         FROM notifications n
-         JOIN tournaments t ON t.id = n.tournament_id
-        WHERE n.tournament_id IN (
-              SELECT tournament_id FROM registrations WHERE player_clerk_id = $1)
-          AND n.audience = 'all'
-        ORDER BY n.created_at DESC
-        LIMIT 50`,
+      `SELECT * FROM (
+         SELECT n.id, n.type, n.title, n.body, n.created_at,
+                t.name AS tournament_name, t.code AS tournament_code
+           FROM notifications n
+           JOIN tournaments t ON t.id = n.tournament_id
+          WHERE n.audience = 'all'
+            AND n.tournament_id IN (
+                SELECT tournament_id FROM registrations WHERE player_clerk_id = $1)
+         UNION ALL
+         SELECT un.id, un.type, un.title, un.body, un.created_at,
+                NULL AS tournament_name, NULL AS tournament_code
+           FROM user_notifications un
+          WHERE un.recipient_clerk_id = $1
+       ) feed
+       ORDER BY created_at DESC
+       LIMIT 50`,
       [req.userId]
     );
     res.json(rows);

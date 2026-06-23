@@ -1,11 +1,13 @@
 import { Router } from "express";
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth, attachClerkUser } from "../middleware/auth.js";
 import { query, withTransaction } from "../db/pool.js";
 import { uniqueCode } from "../lib/codes.js";
 import { toE164, cleanLoose } from "../lib/phone.js";
+import { notifyAdmins } from "../lib/notify.js";
+import { isFreeForAll } from "../lib/settings.js";
 
 const router = Router();
-router.use(requireAuth);
+router.use(requireAuth, attachClerkUser);
 
 // Assert the signed-in user owns this tournament; returns the row.
 async function ownedTournament(id, userId) {
@@ -288,13 +290,33 @@ router.post("/request-access", async (req, res, next) => {
   const name = (req.body?.name || "").trim();
   if (!name) return res.status(400).json({ error: "Please enter your name." });
   try {
+    // Free-for-all ON => issue a usable code instantly (self-serve).
+    if (await isFreeForAll()) {
+      const code = await uniqueCode("gate_passes");
+      await query(
+        `INSERT INTO gate_passes (code, status, created_by_clerk_id, requested_by, requested_by_clerk_id)
+         VALUES ($1,'unused',$2,$3,$2)`,
+        [code, req.userId, name]
+      );
+      return res.status(201).json({ code });
+    }
+
+    // Otherwise create a PENDING request — no usable code until an admin approves.
     const code = await uniqueCode("gate_passes");
-    await query(
-      `INSERT INTO gate_passes (code, status, created_by_clerk_id, requested_by)
-       VALUES ($1,'unused',$2,$3)`,
+    const { rows } = await query(
+      `INSERT INTO gate_passes (code, status, created_by_clerk_id, requested_by, requested_by_clerk_id)
+       VALUES ($1,'pending',$2,$3,$2)
+       RETURNING id`,
       [code, req.userId, name]
     );
-    res.status(201).json({ code });
+    await notifyAdmins({
+      type: "pass_request",
+      title: "New gate pass request",
+      body: `${name} is requesting access to create a tournament.`,
+      data: { passId: rows[0].id, requestedBy: name },
+    }).catch((e) => console.error("[notifyAdmins]", e.message));
+
+    res.status(201).json({ status: "pending" });
   } catch (e) {
     next(e);
   }

@@ -17,18 +17,19 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;  -- gen_random_uuid()
 -- GATE PASSES  (admin mints; single-use; redeemed by an organizer)
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS gate_passes (
-    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    code                 CHAR(5)     NOT NULL UNIQUE,
-    status               TEXT        NOT NULL DEFAULT 'unused'
-                         CHECK (status IN ('unused','claimed','revoked')),
-    created_by_clerk_id  TEXT        NOT NULL,
-    claimed_by_clerk_id  TEXT,
-    tournament_id        UUID,
-    requested_by         TEXT,                  -- name from self-serve "Request access"
-    note                 TEXT,
-    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
-    claimed_at           TIMESTAMPTZ,
-    expires_at           TIMESTAMPTZ
+    id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    code                  CHAR(5)     NOT NULL UNIQUE,
+    status                TEXT        NOT NULL DEFAULT 'unused'
+                          CHECK (status IN ('unused','claimed','revoked','pending','rejected')),
+    created_by_clerk_id   TEXT        NOT NULL,
+    claimed_by_clerk_id   TEXT,
+    tournament_id         UUID,
+    requested_by          TEXT,                  -- name from self-serve "Request access"
+    requested_by_clerk_id TEXT,                  -- so we can notify the requester back
+    note                  TEXT,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    claimed_at            TIMESTAMPTZ,
+    expires_at            TIMESTAMPTZ
 );
 
 -- ------------------------------------------------------------
@@ -205,3 +206,28 @@ CREATE INDEX IF NOT EXISTS idx_matches_tournament       ON matches (tournament_i
 CREATE INDEX IF NOT EXISTS idx_hole_results_match       ON hole_results (match_id);
 CREATE INDEX IF NOT EXISTS idx_events_tournament        ON match_events (tournament_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_notifications_tournament ON notifications (tournament_id, created_at DESC);
+
+-- User-scoped notifications (admin pass requests, organizer approvals, etc.)
+CREATE TABLE IF NOT EXISTS user_notifications (
+    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    recipient_clerk_id TEXT        NOT NULL,
+    type               TEXT        NOT NULL,
+    title              TEXT        NOT NULL,
+    body               TEXT,
+    data               JSONB,
+    read_at            TIMESTAMPTZ,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_user_notifs_recipient ON user_notifications (recipient_clerk_id, created_at DESC);
+
+-- Anyone who has accessed an admin route — used to fan out admin notifications.
+CREATE TABLE IF NOT EXISTS admins (
+    clerk_id  TEXT PRIMARY KEY,
+    seen_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Simple key/value app settings (e.g. the "free for all" gate-pass toggle).
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
