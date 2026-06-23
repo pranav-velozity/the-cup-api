@@ -69,6 +69,24 @@ async function buildBoard(t) {
 
 // ---- permission ----------------------------------------------------------
 
+// Which matches (if any) is this user playing in? Ordered by day/ordinal.
+// Used to surface a "your match" quick-link on the board.
+async function findUserMatchIds(userId, tournamentId) {
+  const { rows } = await query(
+    `SELECT roster_entry_id FROM registrations WHERE tournament_id = $1 AND player_clerk_id = $2`,
+    [tournamentId, userId]
+  );
+  const reId = rows[0]?.roster_entry_id;
+  if (!reId) return [];
+  const { rows: ms } = await query(
+    `SELECT id, side_a, side_b FROM matches WHERE tournament_id = $1 ORDER BY day_index, ordinal`,
+    [tournamentId]
+  );
+  return ms
+    .filter((m) => [...(m.side_a || []), ...(m.side_b || [])].map(String).includes(String(reId)))
+    .map((m) => m.id);
+}
+
 // Can this user score this match? Organizer => any match in their tournament.
 // Player => only a match they're in (their roster_entry_id on either side).
 async function canScore(userId, match, tournament) {
@@ -142,6 +160,7 @@ router.get("/:code/board", async (req, res, next) => {
     const t = await loadTournamentByCode(String(req.params.code).trim());
     if (!t) return res.status(404).json({ error: "No tournament with that code" });
     const { board } = await buildBoard(t);
+    board.yourMatchIds = await findUserMatchIds(req.userId, t.id);
     res.json(board);
   } catch (e) {
     next(e);
