@@ -11,14 +11,15 @@
 // ============================================================
 
 import { Router } from "express";
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth, attachClerkUser, primaryPhone } from "../middleware/auth.js";
 import { query, withTransaction } from "../db/pool.js";
+import { ensureRegistrations } from "../lib/registrations.js";
 import { deriveBoard } from "../lib/scoring.js";
 import { emitBoard, emitEvent } from "../lib/realtime.js";
 import { notify, detectEvents } from "../lib/notify.js";
 
 const router = Router();
-router.use(requireAuth);
+router.use(requireAuth, attachClerkUser);
 
 // ---- load helpers --------------------------------------------------------
 
@@ -160,6 +161,9 @@ router.get("/:code/board", async (req, res, next) => {
     const t = await loadTournamentByCode(String(req.params.code).trim());
     if (!t) return res.status(404).json({ error: "No tournament with that code" });
     const { board } = await buildBoard(t);
+    // Auto-link organizers/players who are on the roster but never formally
+    // joined, so the "your match" pill resolves for their own tournaments too.
+    await ensureRegistrations(req.userId, primaryPhone(req.clerkUser));
     board.yourMatchIds = await findUserMatchIds(req.userId, t.id);
     board.canScoreAll = t.organizer_clerk_id === req.userId;
     res.json(board);

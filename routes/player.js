@@ -6,6 +6,7 @@ import {
 } from "../middleware/auth.js";
 import { query } from "../db/pool.js";
 import { toE164, cleanLoose, phoneKey } from "../lib/phone.js";
+import { ensureRegistrations } from "../lib/registrations.js";
 
 const router = Router();
 router.use(requireAuth, attachClerkUser);
@@ -172,6 +173,10 @@ router.post("/push/subscribe", async (req, res, next) => {
     const sub = req.body?.subscription;
     if (!sub?.endpoint || !sub?.keys?.p256dh || !sub?.keys?.auth)
       return res.status(400).json({ error: "Invalid subscription" });
+
+    // Make sure the user is registered everywhere their phone is on a roster
+    // (e.g. organizers playing in their own tournament), so push reaches them.
+    await ensureRegistrations(req.userId, primaryPhone(req.clerkUser));
 
     const { rows: regs } = await query(
       `SELECT id FROM registrations WHERE player_clerk_id = $1`, [req.userId]
