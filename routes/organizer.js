@@ -35,11 +35,12 @@ router.post("/redeem", async (req, res, next) => {
   const cfg = (Array.isArray(days) && days.length ? days : DEFAULT_DAYS)
     .slice(0, 4)
     .map((d) => {
-      const format = d.format === "scramble" ? "scramble" : "singles";
+      const format = ["scramble", "scramble_stroke"].includes(d.format) ? d.format : "singles";
+      const isScramble = format !== "singles";
       return {
         format,
-        count: clampInt(d.count, format === "scramble" ? 9 : 18, 1, 30),
-        pph: clampInt(d.pph, format === "scramble" ? 2 : 1, 1, 10),
+        count: clampInt(d.count, isScramble ? 9 : 18, 1, 30),
+        pph: format === "scramble" ? clampInt(d.pph, 2, 1, 10) : 1, // stroke-diff ignores pph
         playAll: d.playAll !== false,
       };
     });
@@ -110,9 +111,12 @@ router.post("/redeem", async (req, res, next) => {
         const values = [];
         const params = [];
         let i = 1;
+        // matches.kind only knows 'singles' | 'scramble'; a stroke-diff day is
+        // still scramble pairs, just scored differently (day format carries it).
+        const matchKind = d.format === "singles" ? "singles" : "scramble";
         for (let n = 1; n <= d.count; n++) {
           values.push(`($${i++},$${i++},$${i++},$${i++},$${i++})`);
-          params.push(t.id, di, d.format, `Match ${n}`, n);
+          params.push(t.id, di, matchKind, `Match ${n}`, n);
         }
         await c.query(
           `INSERT INTO matches (tournament_id, day_index, kind, label, ordinal)

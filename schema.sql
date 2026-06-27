@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS tournament_days (
     id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tournament_id    UUID NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
     day_index        INT  NOT NULL CHECK (day_index BETWEEN 0 AND 3),  -- 0-based
-    format           TEXT NOT NULL CHECK (format IN ('singles','scramble')),
+    format           TEXT NOT NULL CHECK (format IN ('singles','scramble','scramble_stroke')),
     points_per_hole  INT  NOT NULL DEFAULT 1 CHECK (points_per_hole BETWEEN 1 AND 10),
     play_all         BOOLEAN NOT NULL DEFAULT true,  -- true = all 18; false = end on clinch
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -146,9 +146,13 @@ CREATE TABLE IF NOT EXISTS hole_results (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     match_id    UUID NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
     hole        INT  NOT NULL CHECK (hole BETWEEN 1 AND 18),
-    result      CHAR(1) CHECK (result IN ('A','B','T')),  -- null = cleared
+    result      CHAR(1) CHECK (result IN ('A','B','T')),  -- null = cleared (match-play)
+    strokes_a   INT,                                       -- stroke-diff: A pair's strokes
+    strokes_b   INT,                                       -- stroke-diff: B pair's strokes
     updated_by  TEXT,                                      -- registration id / clerk id
-    client_ts   TIMESTAMPTZ NOT NULL DEFAULT now(),        -- client clock at tap time
+    client_ts   TIMESTAMPTZ NOT NULL DEFAULT now(),        -- client clock for result writes
+    client_ts_a TIMESTAMPTZ,                               -- independent LWW clock for strokes_a
+    client_ts_b TIMESTAMPTZ,                               -- independent LWW clock for strokes_b
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),        -- server write time
     UNIQUE (match_id, hole)
 );

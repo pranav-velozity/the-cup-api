@@ -46,7 +46,7 @@ async function buildBoard(t) {
       query(`SELECT * FROM tournament_days WHERE tournament_id = $1 ORDER BY day_index`, [t.id]),
       query(`SELECT * FROM matches WHERE tournament_id = $1 ORDER BY day_index, ordinal`, [t.id]),
       query(
-        `SELECT hr.match_id, hr.hole, hr.result
+        `SELECT hr.match_id, hr.hole, hr.result, hr.strokes_a, hr.strokes_b
            FROM hole_results hr
            JOIN matches m ON m.id = hr.match_id
           WHERE m.tournament_id = $1`,
@@ -70,9 +70,9 @@ async function buildBoard(t) {
 
 // ---- permission ----------------------------------------------------------
 
-// Which matches (if any) is this user playing in? Ordered by day/ordinal.
-// Used to surface a "your match" quick-link on the board.
-async function findUserMatchIds(userId, tournamentId) {
+// Which matches (if any) is this user playing in, and on which side?
+// Used to surface a "your match" quick-link and to scope stroke entry.
+async function findUserMatches(userId, tournamentId) {
   const { rows } = await query(
     `SELECT roster_entry_id FROM registrations WHERE tournament_id = $1 AND player_clerk_id = $2`,
     [tournamentId, userId]
@@ -83,9 +83,13 @@ async function findUserMatchIds(userId, tournamentId) {
     `SELECT id, side_a, side_b FROM matches WHERE tournament_id = $1 ORDER BY day_index, ordinal`,
     [tournamentId]
   );
-  return ms
-    .filter((m) => [...(m.side_a || []), ...(m.side_b || [])].map(String).includes(String(reId)))
-    .map((m) => m.id);
+  const out = [];
+  for (const m of ms) {
+    const inA = (m.side_a || []).map(String).includes(String(reId));
+    const inB = (m.side_b || []).map(String).includes(String(reId));
+    if (inA || inB) out.push({ id: m.id, side: inA ? "A" : "B" });
+  }
+  return out;
 }
 
 // Can this user score this match? Organizer => any match in their tournament.
@@ -153,6 +157,29 @@ async function applyHole(c, { match, tournament, hole, result, clientTs, updated
   return rows[0];
 }
 
+// Apply one stroke-diff write (one pair's strokes for one hole). Each side has
+// its own LWW clock so the two pairs sharing a hole row never clobber each
+// other. strokes=null clears that side. No ticker event (board-level only).
+async function applyStroke(c, { match, hole, side, strokes, clientTs }) {
+  const ts = safeTs(clientTs);
+  const val = Number.isFinite(strokes) && strokes >= 1 && strokes <= 30 ? Math.round(strokes) : null;
+  const col = side === "B" ? "strokes_b" : "strokes_a";
+  const tcol = side === "B" ? "client_ts_b" : "client_ts_a";
+
+  const { rows } = await c.query(
+    `INSERT INTO hole_results (match_id, hole, ${col}, ${tcol}, updated_at)
+     VALUES ($1,$2,$3,$4, now())
+     ON CONFLICT (match_id, hole) DO UPDATE
+       SET ${col} = EXCLUDED.${col},
+           ${tcol} = EXCLUDED.${tcol},
+           updated_at = now()
+       WHERE hole_results.${tcol} IS NULL OR EXCLUDED.${tcol} >= hole_results.${tcol}
+     RETURNING *`,
+    [match.id, hole, val, ts.toISOString()]
+  );
+  return rows[0] || null;
+}
+
 // ---- routes --------------------------------------------------------------
 
 // Live board snapshot for a tournament code.
@@ -164,7 +191,9 @@ router.get("/:code/board", async (req, res, next) => {
     // Auto-link organizers/players who are on the roster but never formally
     // joined, so the "your match" pill resolves for their own tournaments too.
     await ensureRegistrations(req.userId, primaryPhone(req.clerkUser));
-    board.yourMatchIds = await findUserMatchIds(req.userId, t.id);
+    const mine = await findUserMatches(req.userId, t.id);
+    board.yourMatchIds = mine.map((x) => x.id);
+    board.yourSides = Object.fromEntries(mine.map((x) => [x.id, x.side]));
     board.canScoreAll = t.organizer_clerk_id === req.userId;
     res.json(board);
   } catch (e) {
@@ -189,21 +218,38 @@ router.put("/matches/:matchId/holes/:hole", async (req, res, next) => {
     if (!(await canScore(req.userId, match, tournament)))
       return res.status(403).json({ error: "You can only score your own match" });
 
+    const isStroke = req.body?.side === "A" || req.body?.side === "B";
+
+    // For stroke-diff, a player may only enter their OWN pair's side.
+    if (isStroke && tournament.organizer_clerk_id !== req.userId) {
+      const { rows } = await query(
+        `SELECT roster_entry_id FROM registrations WHERE tournament_id = $1 AND player_clerk_id = $2`,
+        [tournament.id, req.userId]
+      );
+      const reId = String(rows[0]?.roster_entry_id);
+      const userSide = (match.side_a || []).map(String).includes(reId) ? "A"
+        : (match.side_b || []).map(String).includes(reId) ? "B" : null;
+      if (userSide !== req.body.side)
+        return res.status(403).json({ error: "You can only enter your own pair's score" });
+    }
+
     const namesById = await loadNamesById(tournament.id);
 
     // Snapshot before the write so we can detect newsworthy transitions.
     const { board: beforeBoard } = await buildBoard(tournament);
 
     await withTransaction((c) =>
-      applyHole(c, {
-        match,
-        tournament,
-        hole,
-        result: req.body?.result ?? null,
-        clientTs: req.body?.clientTs,
-        updatedBy: req.userId,
-        namesById,
-      })
+      isStroke
+        ? applyStroke(c, { match, hole, side: req.body.side, strokes: Number(req.body.strokes), clientTs: req.body?.clientTs })
+        : applyHole(c, {
+            match,
+            tournament,
+            hole,
+            result: req.body?.result ?? null,
+            clientTs: req.body?.clientTs,
+            updatedBy: req.userId,
+            namesById,
+          })
     );
 
     const { board, events } = await buildBoard(tournament);
@@ -232,6 +278,7 @@ router.put("/batch", async (req, res, next) => {
     const matchCache = {};
     const tourCache = {};
     const namesCache = {};
+    const regCache = {};
     const touched = {};
     const accepted = [];
     const rejected = [];
@@ -274,17 +321,36 @@ router.put("/batch", async (req, res, next) => {
           continue;
         }
 
+        const isStroke = w.side === "A" || w.side === "B";
+        if (isStroke && tournament.organizer_clerk_id !== req.userId) {
+          if (!(tournament.id in regCache)) {
+            const { rows } = await c.query(
+              `SELECT roster_entry_id FROM registrations WHERE tournament_id = $1 AND player_clerk_id = $2`,
+              [tournament.id, req.userId]
+            );
+            regCache[tournament.id] = String(rows[0]?.roster_entry_id);
+          }
+          const reId = regCache[tournament.id];
+          const userSide = (match.side_a || []).map(String).includes(reId) ? "A"
+            : (match.side_b || []).map(String).includes(reId) ? "B" : null;
+          if (userSide !== w.side) { rejected.push({ ...w, reason: "wrong side" }); continue; }
+        }
+
         if (!namesCache[tournament.id]) namesCache[tournament.id] = await loadNamesById(tournament.id);
 
-        await applyHole(c, {
-          match,
-          tournament,
-          hole,
-          result: w.result ?? null,
-          clientTs: w.clientTs,
-          updatedBy: req.userId,
-          namesById: namesCache[tournament.id],
-        });
+        if (isStroke) {
+          await applyStroke(c, { match, hole, side: w.side, strokes: Number(w.strokes), clientTs: w.clientTs });
+        } else {
+          await applyHole(c, {
+            match,
+            tournament,
+            hole,
+            result: w.result ?? null,
+            clientTs: w.clientTs,
+            updatedBy: req.userId,
+            namesById: namesCache[tournament.id],
+          });
+        }
         touched[tournament.code] = tournament;
         accepted.push({ matchId: w.matchId, hole });
       }
