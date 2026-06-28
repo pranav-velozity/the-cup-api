@@ -5,6 +5,7 @@ import { uniqueCode } from "../lib/codes.js";
 import { toE164, cleanLoose } from "../lib/phone.js";
 import { notifyAdmins } from "../lib/notify.js";
 import { isFreeForAll } from "../lib/settings.js";
+import { normalizeDay, sideSize, matchKind } from "../lib/formats.js";
 
 const router = Router();
 router.use(requireAuth, attachClerkUser);
@@ -27,20 +28,21 @@ router.post("/redeem", async (req, res, next) => {
 
   // Normalize the day config (1..4 days). Fall back to the classic 2-day mix.
   const DEFAULT_DAYS = [
-    { format: "singles", count: 18, pph: 1, playAll: true },
-    { format: "scramble", count: 9, pph: 2, playAll: true },
+    { scoring: "match", format: "singles", count: 18, pph: 1, playAll: true },
+    { scoring: "match", format: "scramble", count: 9, pph: 2, playAll: true },
   ];
   const clampInt = (v, def, lo, hi) =>
     Math.min(Math.max(parseInt(v ?? def, 10) || def, lo), hi);
   const cfg = (Array.isArray(days) && days.length ? days : DEFAULT_DAYS)
     .slice(0, 4)
     .map((d) => {
-      const format = ["scramble", "scramble_stroke"].includes(d.format) ? d.format : "singles";
-      const isScramble = format !== "singles";
+      const { scoring, format } = normalizeDay(d);
+      const isScramble = sideSize(format) > 1;
       return {
+        scoring,
         format,
         count: clampInt(d.count, isScramble ? 9 : 18, 1, 30),
-        pph: format === "scramble" ? clampInt(d.pph, 2, 1, 10) : 1, // stroke-diff ignores pph
+        pph: scoring === "match" ? clampInt(d.pph, isScramble ? 2 : 1, 1, 10) : 1, // stroke ignores pph
         playAll: d.playAll !== false,
       };
     });
@@ -104,19 +106,18 @@ router.post("/redeem", async (req, res, next) => {
         const d = cfg[di];
         await c.query(
           `INSERT INTO tournament_days
-             (tournament_id, day_index, format, points_per_hole, play_all)
-           VALUES ($1,$2,$3,$4,$5)`,
-          [t.id, di, d.format, d.pph, d.playAll]
+             (tournament_id, day_index, scoring, format, points_per_hole, play_all)
+           VALUES ($1,$2,$3,$4,$5,$6)`,
+          [t.id, di, d.scoring, d.format, d.pph, d.playAll]
         );
         const values = [];
         const params = [];
         let i = 1;
-        // matches.kind only knows 'singles' | 'scramble'; a stroke-diff day is
-        // still scramble pairs, just scored differently (day format carries it).
-        const matchKind = d.format === "singles" ? "singles" : "scramble";
+        // matches.kind only encodes side size; the day's scoring axis decides math.
+        const kind = matchKind(d.format);
         for (let n = 1; n <= d.count; n++) {
           values.push(`($${i++},$${i++},$${i++},$${i++},$${i++})`);
-          params.push(t.id, di, matchKind, `Match ${n}`, n);
+          params.push(t.id, di, kind, `Match ${n}`, n);
         }
         await c.query(
           `INSERT INTO matches (tournament_id, day_index, kind, label, ordinal)
