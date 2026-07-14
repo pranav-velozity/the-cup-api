@@ -152,7 +152,7 @@ router.get("/tournaments", async (req, res, next) => {
 router.get("/tournaments/:id", async (req, res, next) => {
   try {
     const t = await ownedTournament(req.params.id, req.userId);
-    const [{ rows: days }, { rows: roster }, { rows: matches }, { rows: registrations }] =
+    const [{ rows: days }, { rows: roster }, { rows: matches }, { rows: registrations }, { rows: scored }] =
       await Promise.all([
         query(
           `SELECT * FROM tournament_days WHERE tournament_id=$1 ORDER BY day_index`,
@@ -171,8 +171,15 @@ router.get("/tournaments/:id", async (req, res, next) => {
            FROM registrations WHERE tournament_id=$1`,
           [t.id]
         ),
+        query(
+          `SELECT DISTINCT m.day_index
+             FROM matches m JOIN hole_results hr ON hr.match_id = m.id
+            WHERE m.tournament_id=$1
+              AND (hr.result IS NOT NULL OR hr.strokes_a IS NOT NULL OR hr.strokes_b IS NOT NULL)`,
+          [t.id]
+        ),
       ]);
-    res.json({ ...t, days, roster, matches, registrations });
+    res.json({ ...t, days, roster, matches, registrations, scoredDays: scored.map((r) => r.day_index) });
   } catch (e) {
     next(e);
   }
@@ -206,6 +213,85 @@ router.patch("/tournaments/:id", async (req, res, next) => {
       ]
     );
     res.json(rows[0]);
+  } catch (e) {
+    next(e);
+  }
+});
+
+// Reconfigure day formats/counts after creation. A day LOCKS once any of its
+// holes has a score — locked days must be sent back unchanged (or omitted).
+// Changing a day's team format clears that day's pairings (side sizes change).
+router.put("/tournaments/:id/days", async (req, res, next) => {
+  try {
+    const t = await ownedTournament(req.params.id, req.userId);
+    const incoming = Array.isArray(req.body?.days) ? req.body.days : null;
+    if (!incoming) return res.status(400).json({ error: "days array required" });
+
+    const clampInt = (v, def, lo, hi) => Math.min(Math.max(parseInt(v ?? def, 10) || def, lo), hi);
+
+    const result = await withTransaction(async (c) => {
+      const { rows: current } = await c.query(
+        `SELECT * FROM tournament_days WHERE tournament_id=$1 ORDER BY day_index`, [t.id]);
+      const { rows: scoredRows } = await c.query(
+        `SELECT DISTINCT m.day_index
+           FROM matches m JOIN hole_results hr ON hr.match_id = m.id
+          WHERE m.tournament_id=$1
+            AND (hr.result IS NOT NULL OR hr.strokes_a IS NOT NULL OR hr.strokes_b IS NOT NULL)`, [t.id]);
+      const lockedSet = new Set(scoredRows.map((r) => r.day_index));
+
+      for (const d of incoming) {
+        const di = Number(d.day_index);
+        const cur = current.find((x) => x.day_index === di);
+        if (!cur) continue; // adding/removing whole days isn't supported here
+
+        const { scoring, format } = normalizeDay(d);
+        const pph = scoring === "match" ? clampInt(d.pph, cur.points_per_hole, 1, 10) : 1;
+        const playAll = d.playAll !== false;
+        const { rows: mrows } = await c.query(
+          `SELECT id, ordinal FROM matches WHERE tournament_id=$1 AND day_index=$2 ORDER BY ordinal`, [t.id, di]);
+        const count = clampInt(d.count, mrows.length, 1, 30);
+
+        const changed = scoring !== cur.scoring || format !== cur.format ||
+          pph !== cur.points_per_hole || playAll !== cur.play_all || count !== mrows.length;
+        if (!changed) continue;
+        if (lockedSet.has(di))
+          throw Object.assign(new Error(`Day ${di + 1} already has scores and can't be changed`), { status: 409 });
+
+        await c.query(
+          `UPDATE tournament_days SET scoring=$3, format=$4, points_per_hole=$5, play_all=$6
+            WHERE tournament_id=$1 AND day_index=$2`,
+          [t.id, di, scoring, format, pph, playAll]);
+
+        // Team format flip => match kind changes and existing pairings no longer fit.
+        if (format !== cur.format) {
+          await c.query(
+            `UPDATE matches SET kind=$3, side_a=NULL, side_b=NULL WHERE tournament_id=$1 AND day_index=$2`,
+            [t.id, di, matchKind(format)]);
+        }
+
+        if (count > mrows.length) {
+          const values = [], params = [];
+          let i = 1;
+          for (let n = mrows.length + 1; n <= count; n++) {
+            values.push(`($${i++},$${i++},$${i++},$${i++},$${i++})`);
+            params.push(t.id, di, matchKind(format), `Match ${n}`, n);
+          }
+          await c.query(
+            `INSERT INTO matches (tournament_id, day_index, kind, label, ordinal) VALUES ${values.join(",")}`, params);
+        } else if (count < mrows.length) {
+          const dropIds = mrows.slice(count).map((m) => m.id);
+          await c.query(`DELETE FROM matches WHERE id = ANY($1)`, [dropIds]);
+        }
+      }
+
+      const { rows: days } = await c.query(
+        `SELECT * FROM tournament_days WHERE tournament_id=$1 ORDER BY day_index`, [t.id]);
+      const { rows: matches } = await c.query(
+        `SELECT * FROM matches WHERE tournament_id=$1 ORDER BY day_index, ordinal`, [t.id]);
+      return { days, matches };
+    });
+
+    res.json(result);
   } catch (e) {
     next(e);
   }

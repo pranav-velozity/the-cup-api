@@ -53,7 +53,7 @@ async function buildBoard(t) {
         [t.id]
       ),
       query(
-        `SELECT text, dot, match_id, created_at
+        `SELECT text, dot, match_id, hole, created_at
            FROM match_events WHERE tournament_id = $1
           ORDER BY created_at DESC LIMIT 14`,
         [t.id]
@@ -253,13 +253,26 @@ router.put("/matches/:matchId/holes/:hole", async (req, res, next) => {
     );
 
     const { board, events } = await buildBoard(tournament);
-    emitBoard(tournament.code, board);
-    if (events[0]) emitEvent(tournament.code, events[0]);
 
-    // Fire notifications for match-final / lead-change / day-end transitions.
-    for (const e of detectEvents(beforeBoard, board)) {
+    // Fire notifications for match-final / lead-change / day-end transitions;
+    // stroke-day events also land in the ticker feed (match-play holes already do).
+    const transitions = detectEvents(beforeBoard, board);
+    for (const e of transitions) {
+      if (e.ticker) {
+        await query(
+          `INSERT INTO match_events (tournament_id, match_id, hole, text, dot) VALUES ($1,NULL,NULL,$2,$3)`,
+          [tournament.id, e.body, e.dot || null]
+        ).catch((err) => console.error("[ticker]", err.message));
+        board.ticker = [
+          { id: `tk-${Date.now()}`, text: e.body, hole: null, side: e.dot === tournament.team_a_color ? "A" : e.dot === tournament.team_b_color ? "B" : null },
+          ...(board.ticker || []),
+        ].slice(0, 8);
+      }
       notify(tournament, e).catch((err) => console.error("[notify]", err.message));
     }
+
+    emitBoard(tournament.code, board);
+    if (events[0]) emitEvent(tournament.code, events[0]);
 
     res.json(board);
   } catch (e) {
@@ -358,14 +371,25 @@ router.put("/batch", async (req, res, next) => {
 
     const boards = {};
     for (const code of Object.keys(touched)) {
-      const { board } = await buildBoard(touched[code]);
+      const t = touched[code];
+      const { board } = await buildBoard(t);
       boards[code] = board;
-      emitBoard(code, board);
       if (beforeBoards[code]) {
         for (const e of detectEvents(beforeBoards[code], board)) {
-          notify(touched[code], e).catch((err) => console.error("[notify]", err.message));
+          if (e.ticker) {
+            await query(
+              `INSERT INTO match_events (tournament_id, match_id, hole, text, dot) VALUES ($1,NULL,NULL,$2,$3)`,
+              [t.id, e.body, e.dot || null]
+            ).catch((err) => console.error("[ticker]", err.message));
+            board.ticker = [
+              { id: `tk-${Date.now()}`, text: e.body, hole: null, side: e.dot === t.team_a_color ? "A" : e.dot === t.team_b_color ? "B" : null },
+              ...(board.ticker || []),
+            ].slice(0, 8);
+          }
+          notify(t, e).catch((err) => console.error("[notify]", err.message));
         }
       }
+      emitBoard(code, board);
     }
 
     res.json({ accepted, rejected, boards });
