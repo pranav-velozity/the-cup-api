@@ -37,7 +37,7 @@ app.use(morgan("tiny"));
 app.use(clerkMiddleware());
 
 app.get("/health", (req, res) =>
-  res.json({ ok: true, service: "the-cup-api", version: "v3.5-photos", time: new Date().toISOString() })
+  res.json({ ok: true, service: "the-cup-api", version: "v3.6-photofeed", time: new Date().toISOString() })
 );
 
 // Public client config (the VAPID public key the browser needs to subscribe).

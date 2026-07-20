@@ -91,6 +91,24 @@ router.post("/score/:code/photos", requireAuth, attachClerkUser, async (req, res
        VALUES ($1,$2,$3,$4,$5) RETURNING id, uploader_name, url, thumb_url, created_at`,
       [t.id, req.userId, name, url, keyFromUrl(thumbUrl) ? thumbUrl : null]
     );
+
+    // Announce on the board ticker — throttled per uploader so a 10-photo dump
+    // reads as one line, not ten.
+    const who = name || "A player";
+    const { rows: recent } = await query(
+      `SELECT 1 FROM match_events
+        WHERE tournament_id = $1 AND text LIKE $2 AND created_at > now() - interval '10 minutes'
+        LIMIT 1`,
+      [t.id, `📸 ${who}%`]
+    );
+    if (!recent.length) {
+      await query(
+        `INSERT INTO match_events (tournament_id, match_id, hole, text, dot)
+         VALUES ($1, NULL, NULL, $2, NULL)`,
+        [t.id, `📸 ${who} added photos to the gallery`]
+      ).catch(() => {});
+    }
+
     res.json({ ...rows[0], mine: true });
   } catch (e) {
     next(e);
