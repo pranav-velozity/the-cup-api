@@ -11,6 +11,7 @@ import organizerRoutes from "./routes/organizer.js";
 import playerRoutes from "./routes/player.js";
 import publicRoutes from "./routes/public.js";
 import scoreRoutes from "./routes/score.js";
+import photoRoutes from "./routes/photos.js";
 import { initRealtime } from "./lib/realtime.js";
 import { vapidPublicKey } from "./lib/push.js";
 
@@ -36,7 +37,7 @@ app.use(morgan("tiny"));
 app.use(clerkMiddleware());
 
 app.get("/health", (req, res) =>
-  res.json({ ok: true, service: "the-cup-api", version: "v3.4-edit", time: new Date().toISOString() })
+  res.json({ ok: true, service: "the-cup-api", version: "v3.5-photos", time: new Date().toISOString() })
 );
 
 // Public client config (the VAPID public key the browser needs to subscribe).
@@ -47,6 +48,7 @@ app.get("/api/config", (req, res) =>
 app.use("/api/admin", adminRoutes);
 app.use("/api/organizer", organizerRoutes);
 app.use("/api/player", playerRoutes);
+app.use("/api", photoRoutes);   // /api/score/:code/photos + /api/photos/:id
 app.use("/api/score", scoreRoutes);
 app.use("/api", publicRoutes);
 
